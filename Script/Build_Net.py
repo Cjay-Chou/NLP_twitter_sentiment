@@ -1,32 +1,100 @@
+# -*- coding:utf-8 -*-
 import os
 import numpy as np
 import pandas as pd
 import keras
-from keras import layers as klayer
+import argparse
+import yaml
+from keras import layers as klayers
 import keras.backend as K
+
+from attention_context import AttentionWithContext
 
 args = None
 
 def ParseArgs():
     parser = argparse.ArgumentParser(description='This is a build NLP Net program')
-    parser.add_argument("outfile", help="Output model structure file in YAML format (*.yml).")
-    parser.add_argument("-p", "--patchsize", help="Patch size. (ex. 44x44x28)", default="44x44x28")
+    parser.add_argument("infile", help="input training file in HDF5 format (*.h5).")
+    parser.add_argument("outfile", help="Output model structure file in HDF5 format (*.h5).")
     parser.add_argument("-c", "--nclasses", help="Number of classes of segmentaiton including background.", default=2, type=int)
-    parser.add_argument("-r", "--reduction", help="The number of filters for filter reduction.", default=128, type=int)
-    parser.add_argument("--noreduction", help="Do not use filter reduction.", dest="use_reduction", action="store_false")
-    parser.add_argument("--nobn", help="Do not use batch normalization layer", dest="use_bn", action='store_false')
-    parser.add_argument("--nodropout", help="Do not use dropout layer", dest="use_dropout", action='store_false')
-    parser.add_argument("-v", "--unetversion", help="Unet version.", choices=["v1", "v2", "v3"], default="v1")
+    parser.add_argument("--nencoder", help="number of encoder units", default = 16, type=int)
+    parser.add_argument("--ndecoder", help="number of decoder units", default = 16, type=int)
     #parser.add_argument("-g", "--gpuid", help="ID of GPU to be used for segmentation. [default=0]", default=0, type=int)
     args = parser.parse_args()
     return args
 
-N_CLASSES=self.n_classes, MAX_TEXT=self.MAX_TEXT, MAX_ITEM_DESC_SEQ=self.MAX_ITEM_DESC_SEQ
+
+def build_branch_cnn(emb):
+    """
+    like googlenet inception v2 structure, after simplified
+    """
+    m_cnn_1 = klayers.Conv1D(64, 3, padding='same',activation='relu')(emb)
+    m_cnn_2 = klayers.Conv1D(32, 3, padding='same',activation='relu')(emb)
+    m_cnn_2 = klayers.Conv1D(128, 3, padding='same',activation='relu')(m_cnn_2)
+    m_cnn_3 = klayers.Conv1D(128, 3, padding='same',activation='relu')(emb)
+    m_cnn_3 = klayers.Conv1D(64, 3, padding='same',activation='relu')(m_cnn_3)
+    m_cnn = klayers.concatenate([m_cnn_1, m_cnn_2, m_cnn_3])
+    m_cnn = klayers.MaxPooling1D(pool_size=2, padding='valid')(m_cnn)
+    m_cnn = klayers.Conv1D(64, 3, padding='same',activation='relu')(m_cnn)
+    m_cnn = klayers.MaxPooling1D(pool_size=2, padding='valid')(m_cnn)
+    m_cnn = klayers.Flatten()(m_cnn)
+    return m_cnn
+
+def build_branch_bilstm_am(emb):
+    """
+    adding attention model
+    """
+    # m_lstm = LSTM(self.encoder_units, return_sequences=True, trainable=True)(emb)
+    m_lstm = klayers.Bidirectional(klayers.LSTM(args.nencoder, return_sequences=True, trainable=True))(emb)
+    attention = AttentionWithContext()(m_lstm)
+
+    return attention
+
+def build_branch_bilstm_position_am(emb):
+    """
+    build attention model according position infomation
+    result not good.
+    """
+    m_lstm = klayers.Bidirectional(klayers.LSTM(args.nencoder, return_sequences=True, trainable=True))(emb)
+    attention = klayers.TimeDistributed(klayers.Dense(1, activation='tanh'))(m_lstm)
+    attention = klayers.Flatten()(attention)
+    attention = klayers.Activation('softmax')(attention)
+    attention = klayers.RepeatVector(args.ndecoder * 2)(attention)
+    attention = klayers.Permute([2, 1])(attention)
+
+    m_lstm_am = klayers.merge([m_lstm, attention], mode='mul')
+    m_lstm_am = klayers.Lambda(lambda xin: K.sum(xin, axis=1))(m_lstm_am)
+
+    return m_lstm_am
+
 def build_net():
-    sentimenttext = Input(shape=[X_train.shape[1]], name="seq_sentimenttext")
+    """
+    # Build model
+    """
+    inputs = klayers.Input(shape=[X_train.shape[1]], name="seq_sentimenttext")
+    emb_sentimenttext = klayers.Embedding(self.MAX_TEXT, self.emb_size, trainable=True)(inputs)
+    #get two branch
+    layer_cnn = build_branch_cnn(emb_sentimenttext)
+    layer_lstm_am = build_branch_bilstm_am(emb_sentimenttext)
+    #add two branch
+    close_branch = klayers.concatenate([layer_cnn, layer_lstm_am])
 
+    fc = klayers.Dense(128, activation='relu')(close_branch)
+    fc = klayers.Dropout(0.2)(fc)
+    fc = klayers.Dense(64, activation='relu')(fc)
+    fc = klayers.Dropout(0.2)(fc)
 
+    output = klayers.Dense(args.nclasses, activation='softmax')(fc)
+    model = keras.models.Model(inputs,output)
+
+    print(model.summary())
+
+    return model
 
 if __name__ == '__main__':
     args = ParseArgs()
-    build_net()
+
+    
+    model = build_net()
+    if args.outfile is not None:
+        model.save(args.outfile)
