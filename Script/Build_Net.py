@@ -7,6 +7,8 @@ import argparse
 import yaml
 from keras import layers as klayers
 import keras.backend as K
+import pickle
+
 
 from attention_context import AttentionWithContext
 
@@ -14,7 +16,7 @@ args = None
 
 def ParseArgs():
     parser = argparse.ArgumentParser(description='This is a build NLP Net program')
-    parser.add_argument("infile", help="input training file in HDF5 format (*.h5).")
+    parser.add_argument("infile", help="input training file in pickl format (*.pkl).")
     parser.add_argument("outfile", help="Output model structure file in HDF5 format (*.h5).")
     parser.add_argument("-c", "--nclasses", help="Number of classes of segmentaiton including background.", default=2, type=int)
     parser.add_argument("--nencoder", help="number of encoder units", default = 16, type=int)
@@ -71,8 +73,8 @@ def build_net():
     """
     # Build model
     """
-    inputs = klayers.Input(shape=[X_train.shape[1]], name="seq_sentimenttext")
-    emb_sentimenttext = klayers.Embedding(self.MAX_TEXT, self.emb_size, trainable=True)(inputs)
+    inputs = klayers.Input(shape=[50], name="seq_sentimenttext")
+    emb_sentimenttext = klayers.Embedding(MAX_TEXT, 50, trainable=True)(inputs)
     #get two branch
     layer_cnn = build_branch_cnn(emb_sentimenttext)
     layer_lstm_am = build_branch_bilstm_am(emb_sentimenttext)
@@ -93,8 +95,12 @@ def build_net():
 
 if __name__ == '__main__':
     args = ParseArgs()
-
     
+    with open(args.infile, 'rb') as f:
+        data_f = pickle.load(f)
+    
+    MAX_TEXT = data_f['words_num']
+
     model = build_net()
     if args.outfile is not None:
         model.save(args.outfile)
